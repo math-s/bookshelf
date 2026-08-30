@@ -37,6 +37,8 @@ jobs:
             echo "::warning::BOOKSHELF_API_BASE variable is not set; users must configure the API URL in Settings."
           fi
 
+      # Fails with "Get Pages site failed" until Pages is enabled for the repo:
+      # Settings -> Pages -> Source: GitHub Actions.
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

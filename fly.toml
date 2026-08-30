@@ -4,10 +4,16 @@
 #   fly launch --no-deploy --copy-config
 #   fly volumes create bookshelf_data --size 1 --region <your-region>
 #   fly secrets set GOOGLE_BOOKS_API_KEY=... BOOKSHELF_TOKEN=$(openssl rand -hex 24)
-#   fly secrets set BOOKSHELF_CORS_ORIGINS=https://<user>.github.io
+#   fly secrets set BOOKSHELF_CORS_ORIGINS=https://<user>.github.io,http://localhost:8000
 #   fly deploy
+#
+# The volume must exist BEFORE the first deploy, or each release starts from an
+# empty library. Its name must match the [mounts] source below.
 
+# `fly launch` rewrites this. "bookshelf" is almost certainly taken — app names
+# are global across Fly — so expect to be prompted for a different one.
 app = "bookshelf"
+# São Paulo. Change to a region near you: `fly platform regions` lists them.
 primary_region = "gru"
 
 [build]

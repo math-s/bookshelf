@@ -16,6 +16,7 @@
   <div class="viewtoggle">
     <button id="view-grid" aria-pressed="true" title="Grid view">Grid</button>
     <button id="view-table" aria-pressed="false" title="Table view">Table</button>
+    <button id="view-author" aria-pressed="false" title="Group by author">By author</button>
   </div>
   <button id="open-import">Add ISBNs</button>
   <a href="./scan.html"><button title="Scan barcodes with your camera">Scan</button></a>
@@ -42,6 +43,9 @@
   <main>
     <div class="resultbar">
       <span id="summary"></span>
+      <label id="multi-only" class="inline-toggle" hidden>
+        <input type="checkbox" id="min-books"> Only authors with 2+ books
+      </label>
       <div class="spacer"></div>
       <label for="sort">Sort</label>
       <select id="sort">

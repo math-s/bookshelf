@@ -240,3 +240,70 @@ class TestCors:
         client = TestClient(create_app(db_file))
         r = client.get("/api/books", headers={"Origin": "https://math-s.github.io"})
         assert r.headers["access-control-allow-origin"] == "https://math-s.github.io"
+
+
+class TestAuthorEndpoints:
+    def test_lists_authors_with_counts(self, client):
+        names = {a["name"] for a in client.get("/api/authors").json()["authors"]}
+        assert "Roald Dahl" in names and "J.R.R. Tolkien" in names
+
+    def test_author_detail_returns_their_books(self, client):
+        authors = client.get("/api/authors").json()["authors"]
+        tolkien = next(a for a in authors if a["name"] == "J.R.R. Tolkien")
+        body = client.get(f"/api/authors/{tolkien['id']}").json()
+        assert [b["isbn13"] for b in body["books"]] == [HOBBIT]
+
+    def test_unknown_author_404s(self, client):
+        assert client.get("/api/authors/99999").status_code == 404
+
+    def test_filter_books_by_author_id(self, client):
+        authors = client.get("/api/authors").json()["authors"]
+        dahl = next(a for a in authors if a["name"] == "Roald Dahl")
+        body = client.get("/api/books", params={"author_id": dahl["id"]}).json()
+        assert [b["isbn13"] for b in body["items"]] == [FOX]
+
+    def test_books_carry_author_credits_with_ids(self, client):
+        book = client.get(f"/api/books/{FOX}").json()
+        assert [c["name"] for c in book["author_credits"]] == ["Roald Dahl"]
+        assert isinstance(book["author_credits"][0]["id"], int)
+        # The plain name list stays available for existing callers.
+        assert book["authors"] == ["Roald Dahl"]
+
+    def test_group_by_author(self, client):
+        body = client.get("/api/books", params={"group_by": "author"}).json()
+        names = {g["name"] for g in body["groups"]}
+        assert names == {"Roald Dahl", "J.R.R. Tolkien"}
+        assert body["total"] == 2
+
+    def test_grouping_respects_filters(self, client):
+        client.patch(f"/api/books/{FOX}", json={"status": "read"})
+        body = client.get("/api/books", params={"group_by": "author", "status": "read"}).json()
+        assert [g["name"] for g in body["groups"]] == ["Roald Dahl"]
+
+    def test_merge_authors_endpoint(self, client):
+        authors = {a["name"]: a["id"] for a in client.get("/api/authors").json()["authors"]}
+        result = client.post(
+            "/api/authors/merge",
+            json={"source_id": authors["J.R.R. Tolkien"], "target_id": authors["Roald Dahl"]},
+        )
+        assert result.status_code == 200
+        assert result.json()["books_total"] == 2
+        remaining = {a["name"] for a in client.get("/api/authors").json()["authors"]}
+        assert "J.R.R. Tolkien" not in remaining
+
+    def test_merge_into_self_is_a_400(self, client):
+        authors = {a["name"]: a["id"] for a in client.get("/api/authors").json()["authors"]}
+        got = client.post(
+            "/api/authors/merge",
+            json={"source_id": authors["Roald Dahl"], "target_id": authors["Roald Dahl"]},
+        )
+        assert got.status_code == 400
+
+    def test_deleting_a_book_prunes_its_orphaned_author(self, client):
+        client.delete(f"/api/books/{FOX}")
+        names = {a["name"] for a in client.get("/api/authors").json()["authors"]}
+        assert "Roald Dahl" not in names
+
+    def test_author_facets_carry_ids(self, client):
+        authors = client.get("/api/books").json()["facets"]["authors"]
+        assert all("id" in a and "count" in a for a in authors)

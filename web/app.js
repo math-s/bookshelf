@@ -12,12 +12,14 @@ const state = {
   q: "",
   status: new Set(),
   tags: new Set(),
-  author: null,
+  authorId: null,
   ratingMin: null,
   sort: "title",
   order: "asc",
   view: localStorage.getItem("bookshelf.view") || "grid",
+  multiAuthorsOnly: localStorage.getItem("bookshelf.multiOnly") === "1",
   items: [],
+  groups: null,
   total: 0,
   loadError: null,
   facets: { statuses: {}, tags: [], authors: [] },
@@ -59,18 +61,24 @@ function queryString() {
   if (state.q) params.set("q", state.q);
   for (const s of state.status) params.append("status", s);
   for (const t of state.tags) params.append("tag", t);
-  if (state.author) params.set("author", state.author);
+  if (state.authorId) params.set("author_id", state.authorId);
   if (state.ratingMin) params.set("rating_min", state.ratingMin);
   params.set("sort", state.sort);
   params.set("order", state.order);
   params.set("limit", "500");
+  if (state.view === "author") {
+    params.set("group_by", "author");
+    if (state.multiAuthorsOnly) params.set("min_books", "2");
+  }
   return params.toString();
 }
 
 async function load() {
   try {
     const data = await api(`/api/books?${queryString()}`);
-    state.items = data.items;
+    // The grouped endpoint returns `groups`; the flat one returns `items`.
+    state.groups = data.groups || null;
+    state.items = data.items || (data.groups || []).flatMap((g) => g.books);
     state.total = data.total;
     state.facets = data.facets;
     state.loadError = null;
@@ -92,8 +100,9 @@ function render() {
   $("#count").textContent = state.facets.statuses
     ? `· ${Object.values(state.facets.statuses).reduce((a, b) => a + b, 0)} books`
     : "";
-  const filtered = state.q || state.status.size || state.tags.size || state.author || state.ratingMin;
+  const filtered = state.q || state.status.size || state.tags.size || state.authorId || state.ratingMin;
   $("#reset-wrap").hidden = !filtered;
+  $("#multi-only").hidden = state.view !== "author";
   $("#summary").textContent = filtered
     ? `${state.total} matching book${state.total === 1 ? "" : "s"}`
     : `${state.total} book${state.total === 1 ? "" : "s"}`;
@@ -151,13 +160,13 @@ function renderFacets() {
   const authorBox = $("#facet-authors");
   const authors = (state.facets.authors || []).slice(0, 12);
   authorBox.replaceChildren(
-    ...authors.map(({ name, count }) => {
-      const active = state.author === name;
+    ...authors.map(({ id, name, count }) => {
+      const active = state.authorId === id;
       const row = el("div", { className: "facet" },
         el("span", { textContent: name, style: active ? "color:var(--accent);font-weight:600" : "" }),
         el("span", { className: "count", textContent: count }));
       row.addEventListener("click", () => {
-        state.author = active ? null : name;
+        state.authorId = active ? null : id;
         load();
       });
       return row;
@@ -211,7 +220,40 @@ function renderResults() {
         ? "Add some ISBNs to get started." : "Try loosening the filters." })));
     return;
   }
-  box.replaceChildren(state.view === "grid" ? gridNode() : tableNode());
+  if (state.view === "author") box.replaceChildren(authorGroupsNode());
+  else box.replaceChildren(state.view === "grid" ? gridNode() : tableNode());
+}
+
+/** Books bucketed under each author. A book with two authors shows under both. */
+function authorGroupsNode() {
+  const wrap = el("div", { className: "groups" });
+  for (const group of state.groups || []) {
+    const heading = el("h3", { className: "grouphead" },
+      el("button", { className: "linkish groupname", textContent: group.name }),
+      el("span", { className: "count", textContent: `${group.books.length} book${group.books.length === 1 ? "" : "s"}` }));
+
+    if (group.id != null) {
+      heading.querySelector(".groupname").addEventListener("click", () => {
+        state.authorId = group.id;
+        setView("grid");
+        load();
+      });
+    }
+
+    wrap.append(heading, el("div", { className: "grid" },
+      ...group.books.map((book) => {
+        const card = el("div", { className: "card" },
+          coverNode(book),
+          el("h4", { textContent: book.title || "Untitled" }),
+          el("p", { textContent: book.status }));
+        card.addEventListener("click", () => openDrawer(book.isbn13));
+        return card;
+      })));
+  }
+  if (!(state.groups || []).length) {
+    wrap.append(el("div", { className: "empty" }, el("h3", { textContent: "Nothing matched" })));
+  }
+  return wrap;
 }
 
 function gridNode() {
@@ -384,7 +426,7 @@ async function openDrawer(isbn13) {
       el("div", {},
         el("h2", { textContent: book.title || "Untitled" }),
         book.subtitle ? el("p", { className: "byline", textContent: book.subtitle }) : null,
-        el("p", { className: "byline", textContent: (book.authors || []).join(", ") || "Unknown author" }))),
+        authorLinksNode(book))),
     el("dl", {},
       ...detailPairs(book).flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })])),
     book.description ? el("div", { className: "desc", textContent: book.description }) : null,
@@ -398,6 +440,26 @@ async function openDrawer(isbn13) {
     el("div", { style: "margin-top:16px" }, remove));
 
   document.body.append(scrim, drawer);
+}
+
+/** Author names that filter the library down to that person when clicked. */
+function authorLinksNode(book) {
+  const credits = book.author_credits || [];
+  if (!credits.length) {
+    return el("p", { className: "byline", textContent: "Unknown author" });
+  }
+  const line = el("p", { className: "byline" });
+  credits.forEach((credit, index) => {
+    if (index) line.append(", ");
+    const link = el("button", { className: "linkish", textContent: credit.name });
+    link.addEventListener("click", () => {
+      state.authorId = credit.id;
+      closeOverlays();
+      load();
+    });
+    line.append(link);
+  });
+  return line;
 }
 
 function detailPairs(book) {
@@ -494,11 +556,16 @@ function openSettings() {
 /* --- wiring --------------------------------------------------------------- */
 
 function setView(view) {
+  const previous = state.view;
   state.view = view;
   localStorage.setItem("bookshelf.view", view);
-  $("#view-grid").setAttribute("aria-pressed", String(view === "grid"));
-  $("#view-table").setAttribute("aria-pressed", String(view === "table"));
-  renderResults();
+  for (const name of ["grid", "table", "author"]) {
+    $(`#view-${name}`).setAttribute("aria-pressed", String(view === name));
+  }
+  // Grouped and flat results come from different shapes, so switching in or out
+  // of the author view needs a refetch rather than just a re-render.
+  if ((previous === "author") !== (view === "author")) load();
+  else renderResults();
 }
 
 let searchTimer;
@@ -508,13 +575,20 @@ $("#q").addEventListener("input", (e) => {
 });
 $("#view-grid").addEventListener("click", () => setView("grid"));
 $("#view-table").addEventListener("click", () => setView("table"));
+$("#view-author").addEventListener("click", () => setView("author"));
+$("#min-books").addEventListener("change", (e) => {
+  state.multiAuthorsOnly = e.target.checked;
+  localStorage.setItem("bookshelf.multiOnly", e.target.checked ? "1" : "0");
+  load();
+});
+$("#min-books").checked = state.multiAuthorsOnly;
 $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; load(); });
 $("#order").addEventListener("change", (e) => { state.order = e.target.value; load(); });
 $("#open-import").addEventListener("click", openImport);
 $("#open-settings").addEventListener("click", openSettings);
 $("#reset").addEventListener("click", () => {
   state.q = ""; state.status.clear(); state.tags.clear();
-  state.author = null; state.ratingMin = null;
+  state.authorId = null; state.ratingMin = null;
   $("#q").value = "";
   load();
 });
@@ -523,5 +597,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "/" && document.activeElement !== $("#q")) { e.preventDefault(); $("#q").focus(); }
 });
 
+// setView only refetches when the grouped/flat shape changes, which it never
+// does on the first call — so the initial load is unconditional.
 setView(state.view);
 load();
