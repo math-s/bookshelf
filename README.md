@@ -115,49 +115,78 @@ quoted, so punctuation in the search box can't produce a query error.
 The UI is static and the API is not, so they deploy separately: **GitHub Pages**
 for the frontend, **Fly.io** for the API and its SQLite volume.
 
-### API on Fly.io
+### Order matters
+
+CORS needs the Pages origin and Pages needs the Fly URL, which looks circular.
+It isn't: your Pages origin is predictable from your username, so set it during
+the Fly step, before Pages exists.
+
+### 1. API on Fly.io
 
 ```bash
 fly launch --no-deploy --copy-config
-fly volumes create bookshelf_data --size 1 --region <your-region>
+```
 
+`fly.toml` ships with `app = "bookshelf"`. App names are global across Fly, so
+that one is almost certainly taken and `fly launch` will prompt for another —
+whatever you pick becomes your URL. `primary_region` is `gru` (São Paulo);
+change it if that isn't near you.
+
+**Create the volume before the first deploy.** SQLite lives on it, and without
+it every release starts from an empty library:
+
+```bash
+fly volumes create bookshelf_data --size 1 --region <your-region>
+```
+
+The name must stay `bookshelf_data` to match the `[mounts]` block.
+
+```bash
 fly secrets set \
   GOOGLE_BOOKS_API_KEY=... \
   BOOKSHELF_TOKEN=$(openssl rand -hex 24) \
-  BOOKSHELF_CORS_ORIGINS=https://<your-user>.github.io
+  BOOKSHELF_CORS_ORIGINS=https://<your-user>.github.io,http://localhost:8000
 
 fly deploy
+curl https://<your-app>.fly.dev/healthz     # {"status":"ok"}
 ```
 
-The volume matters: SQLite lives at `/data/bookshelf.db`, and without a mounted
-volume every deploy would start from an empty library. Keep the app on a single
-machine — one SQLite file cannot be shared across several.
+Keep the app on a single machine — one SQLite file cannot be shared across
+several.
 
-### UI on GitHub Pages
+### 2. UI on GitHub Pages
 
-Enable Pages for the repo (Settings → Pages → Source: GitHub Actions), then set
-a repository **variable** `BOOKSHELF_API_BASE` to your Fly URL
-(e.g. `https://bookshelf.fly.dev`). The workflow in
-`.github/workflows/pages.yml` bakes it into `config.js` at deploy time, so
-visitors don't have to configure anything.
+1. **Settings → Pages → Source: GitHub Actions.** Do this first. Until Pages is
+   enabled the workflow fails at `actions/configure-pages`, which is the most
+   likely reason a run went red before you ever touched the code.
+2. **Settings → Secrets and variables → Actions → Variables** → add
+   `BOOKSHELF_API_BASE` = `https://<your-app>.fly.dev`. The workflow bakes it
+   into `config.js` at deploy time so visitors need no setup.
+3. Re-run the workflow (Actions → the run → Re-run jobs), or push to `web/**`.
 
-Without that variable the page still works — open the ⚙ Settings dialog and
-enter the API URL and token by hand; both are stored in that browser only.
+The UI lands at `https://<your-user>.github.io/<repo>/`.
+
+Without the variable the page still works — open ⚙ Settings and enter the API
+URL and token by hand; both stay in that browser only.
+
+### 3. First use
+
+Open the UI, click ⚙, and paste your `BOOKSHELF_TOKEN`. The API rejects
+everything without it.
 
 ### Two things to get right
 
-**CORS.** `BOOKSHELF_CORS_ORIGINS` must list your Pages origin exactly
-(`https://user.github.io`, no path, no trailing slash) or the browser blocks
-every request. It is comma-separated; add `http://localhost:8000` for local work.
+**CORS is an origin, not a URL.** `BOOKSHELF_CORS_ORIGINS` wants
+`https://user.github.io` — scheme and host, no `/repo` path, no trailing slash.
+Get it wrong and the browser blocks every request with no useful error.
 
-**The token.** A public Pages frontend talking to a public Fly API is open to
-anyone who finds the URL, and the API can write and delete. **Set
-`BOOKSHELF_TOKEN`.** Requests must then carry `X-Bookshelf-Token`.
+**Set `BOOKSHELF_TOKEN`.** A public Pages frontend talking to a public Fly API
+is reachable by anyone who finds the URL, and the API can write and delete.
 
-Be clear-eyed about what that gets you: the token is entered in the browser and
-kept in `localStorage`, so it protects against a passer-by, not against someone
-using a browser you left unlocked. For anything stronger, keep the API private
-(Tailscale, or Fly's private networking) rather than relying on the header.
+Be clear-eyed about what the token buys: it is entered in the browser and kept
+in `localStorage`, so it stops a passer-by, not someone using a browser you left
+unlocked. For anything stronger, keep the API off the public internet (Tailscale,
+or Fly private networking) rather than relying on the header.
 
 ## Barcode scanning
 
