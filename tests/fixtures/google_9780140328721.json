@@ -1,0 +1,32 @@
+{
+  "kind": "books#volumes",
+  "totalItems": 1,
+  "items": [
+    {
+      "kind": "books#volume",
+      "id": "YQzXPQAACAAJ",
+      "etag": "3Xk9vQ8hLmA",
+      "selfLink": "https://www.googleapis.com/books/v1/volumes/YQzXPQAACAAJ",
+      "volumeInfo": {
+        "title": "Fantastic Mr. Fox",
+        "authors": ["Roald Dahl"],
+        "publisher": "Puffin",
+        "publishedDate": "1988-10-01",
+        "description": "Someone's been stealing from the three meanest farmers around, and they know the identity of the thief.",
+        "industryIdentifiers": [
+          {"type": "ISBN_10", "identifier": "0140328726"},
+          {"type": "ISBN_13", "identifier": "9780140328721"}
+        ],
+        "pageCount": 96,
+        "categories": ["Juvenile Fiction"],
+        "imageLinks": {
+          "smallThumbnail": "http://books.google.com/books/content?id=YQzXPQAACAAJ&printsec=frontcover&img=1&zoom=5",
+          "thumbnail": "http://books.google.com/books/content?id=YQzXPQAACAAJ&printsec=frontcover&img=1&zoom=1"
+        },
+        "language": "en",
+        "previewLink": "http://books.google.com/books?id=YQzXPQAACAAJ",
+        "infoLink": "http://books.google.com/books?id=YQzXPQAACAAJ"
+      }
+    }
+  ]
+}

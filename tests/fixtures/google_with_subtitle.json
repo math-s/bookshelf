@@ -1,0 +1,27 @@
+{
+  "kind": "books#volumes",
+  "totalItems": 1,
+  "items": [
+    {
+      "kind": "books#volume",
+      "id": "pD6arNyKyi8C",
+      "volumeInfo": {
+        "title": "The Hobbit",
+        "subtitle": "or There and Back Again",
+        "authors": ["J. R. R. Tolkien", "Christopher Tolkien"],
+        "publisher": "HarperCollins",
+        "publishedDate": "2007",
+        "description": "Bilbo Baggins is a hobbit who enjoys a comfortable, unambitious life.",
+        "industryIdentifiers": [
+          {"type": "ISBN_13", "identifier": "9780261102217"},
+          {"type": "ISBN_10", "identifier": "0261102214"}
+        ],
+        "pageCount": 389,
+        "categories": ["Fiction", "Fantasy"],
+        "imageLinks": {"thumbnail": "http://books.google.com/books/content?id=pD6arNyKyi8C&img=1"},
+        "language": "en",
+        "previewLink": "http://books.google.com/books?id=pD6arNyKyi8C"
+      }
+    }
+  ]
+}

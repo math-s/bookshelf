@@ -1,0 +1,45 @@
+# Fly.io configuration for the Bookshelf API.
+#
+# First-time setup:
+#   fly launch --no-deploy --copy-config
+#   fly volumes create bookshelf_data --size 1 --region <your-region>
+#   fly secrets set GOOGLE_BOOKS_API_KEY=... BOOKSHELF_TOKEN=$(openssl rand -hex 24)
+#   fly secrets set BOOKSHELF_CORS_ORIGINS=https://<user>.github.io
+#   fly deploy
+
+app = "bookshelf"
+primary_region = "gru"
+
+[build]
+
+[env]
+  BOOKSHELF_DB = "/data/bookshelf.db"
+  BOOKSHELF_WEB_DIR = "/app/web"
+  PORT = "8080"
+
+# SQLite lives on a real disk: without this the library is wiped on every deploy.
+[mounts]
+  source = "bookshelf_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # A single machine — SQLite on one volume cannot be shared across machines.
+  min_machines_running = 0
+
+  [http_service.http_options.response.headers]
+    X-Content-Type-Options = "nosniff"
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
