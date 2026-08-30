@@ -1,0 +1,45 @@
+name: Deploy UI to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point the UI at the API
+        # Baked in at deploy time so visitors don't have to set it by hand.
+        # Set the BOOKSHELF_API_BASE repository variable to your Fly URL.
+        env:
+          API_BASE: ${{ vars.BOOKSHELF_API_BASE }}
+        run: |
+          if [ -n "$API_BASE" ]; then
+            sed -i "s|const DEFAULT_API_BASE = \"\";|const DEFAULT_API_BASE = \"${API_BASE%/}\";|" web/config.js
+            grep -n "DEFAULT_API_BASE" web/config.js
+          else
+            echo "::warning::BOOKSHELF_API_BASE variable is not set; users must configure the API URL in Settings."
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deploy
+        uses: actions/deploy-pages@v4
