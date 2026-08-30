@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .db import connect, db_path, json_list, tags_for
+from .db import connect, db_path, merge_authors, tags_for
 from .enrich import import_isbns, lookup, upsert_book
 from .providers import PROVIDERS, ProviderError, build_chain
-from .queries import BookFilter, search, stats
+from .queries import BookFilter, books_grouped_by_author, list_authors, search, stats
 
 
 def _read_input(source: str) -> str:
@@ -151,6 +151,55 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_authors(args) -> int:
+    conn = connect(args.db)
+    try:
+        if args.merge:
+            source, target = args.merge
+            try:
+                result = merge_authors(conn, _author_id(conn, source), _author_id(conn, target))
+            except ValueError as exc:
+                raise SystemExit(f"error: {exc}")
+            conn.commit()
+            print(f"Merged {result['merged']!r} into {result['into']!r} — "
+                  f"{result['books_moved']} book(s) moved, "
+                  f"{result['books_total']} now credited to {result['into']!r}")
+            return 0
+
+        authors = list_authors(conn, args.query)
+    finally:
+        conn.close()
+
+    if args.json:
+        print(json.dumps(authors, indent=2, ensure_ascii=False))
+        return 0
+
+    if not authors:
+        print("No authors yet.")
+        return 0
+    for author in authors:
+        rating = f"{author['average_rating']:.2f}" if author["average_rating"] else "-"
+        print(f"{author['id']:>4}  {author['name'][:44]:<44} "
+              f"{author['book_count']:>3} book(s)  {author['read_count']:>3} read  avg {rating}")
+    print(f"\n{len(authors)} author(s)")
+    return 0
+
+
+def _author_id(conn, value: str) -> int:
+    """Accept either a numeric id or an unambiguous name."""
+    if value.isdigit():
+        return int(value)
+    rows = conn.execute(
+        "SELECT id, name FROM authors WHERE name LIKE ?", (f"%{value}%",)
+    ).fetchall()
+    if not rows:
+        raise SystemExit(f"error: no author matching {value!r}")
+    if len(rows) > 1:
+        names = ", ".join(f"{r['name']} (id {r['id']})" for r in rows[:6])
+        raise SystemExit(f"error: {value!r} matches several authors: {names}")
+    return rows[0]["id"]
+
+
 def cmd_stats(args) -> int:
     conn = connect(args.db)
     try:
@@ -178,23 +227,39 @@ def cmd_stats(args) -> int:
 
 
 def cmd_list(args) -> int:
+    book_filter = BookFilter(
+        q=args.query,
+        status=args.status or [],
+        tags=args.tag or [],
+        author=args.author,
+        rating_min=args.rating_min,
+        sort=args.sort,
+        order=args.order,
+        limit=args.limit,
+    )
     conn = connect(args.db)
     try:
-        result = search(
-            conn,
-            BookFilter(
-                q=args.query,
-                status=args.status or [],
-                tags=args.tag or [],
-                author=args.author,
-                rating_min=args.rating_min,
-                sort=args.sort,
-                order=args.order,
-                limit=args.limit,
-            ),
-        )
+        if args.by_author:
+            grouped = books_grouped_by_author(conn, book_filter, min_books=args.min_books)
+        else:
+            result = search(conn, book_filter)
     finally:
         conn.close()
+
+    if args.by_author:
+        if args.json:
+            print(json.dumps(grouped["groups"], indent=2, ensure_ascii=False))
+            return 0
+        if not grouped["groups"]:
+            print("No books matched.")
+            return 0
+        for group in grouped["groups"]:
+            print(f"\n{group['name']}  ({len(group['books'])})")
+            for book in group["books"]:
+                rating = f" {'*' * book['rating']}" if book.get("rating") else ""
+                print(f"    {book['title'][:56]:<56} {book['status']:<9}{rating}")
+        print(f"\n{grouped['total']} book(s) across {len(grouped['groups'])} author(s)")
+        return 0
 
     if args.json:
         print(json.dumps(result["items"], indent=2, ensure_ascii=False))
@@ -265,8 +330,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sort", default="title")
     p.add_argument("--order", default="asc", choices=("asc", "desc"))
     p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--by-author", action="store_true", help="group the results by author")
+    p.add_argument("--min-books", type=int, default=1,
+                   help="with --by-author, hide authors with fewer than N books")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("authors", help="list authors, or merge two of them")
+    p.add_argument("query", nargs="?", help="filter authors by name")
+    p.add_argument(
+        "--merge", nargs=2, metavar=("FROM", "INTO"),
+        help="fold one author into another, by id or name; the link survives refetches",
+    )
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_authors)
 
     p = sub.add_parser("stats", help="summarise the library")
     p.add_argument("--json", action="store_true")

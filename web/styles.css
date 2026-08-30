@@ -32,6 +32,10 @@
 
 * { box-sizing: border-box; }
 
+/* A class that sets `display` outranks the UA's [hidden] rule, so make the
+   attribute win outright — several controls rely on it to hide themselves. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -318,3 +322,39 @@ legend { padding: 0 6px; font-size: 11px; font-weight: 650; letter-spacing: 0.08
   aside { position: static; flex: 1 1 auto; width: 100%; max-height: none; }
   .brand small { display: none; }
 }
+
+/* --- grouped-by-author view --- */
+
+.groups > .grid { margin-bottom: 26px; }
+
+.grouphead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 26px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--ink);
+}
+.groups > .grouphead:first-child { margin-top: 0; }
+.grouphead .groupname { font: inherit; color: var(--ink); text-decoration: none; }
+.grouphead .groupname:hover { color: var(--accent); text-decoration: underline; }
+.grouphead .count { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+/* In the grouped view the author is the heading, so the card repeats the status
+   instead of the name. */
+.groups .card p { text-transform: capitalize; }
+
+.inline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.inline-toggle:hover { color: var(--accent); }

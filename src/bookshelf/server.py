@@ -12,10 +12,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from .db import STATUSES, connect, set_tags, tags_for
+from .db import STATUSES, connect, merge_authors, set_tags, tags_for
 from .enrich import import_isbns
 from .providers import build_chain
-from .queries import BASE_SELECT, BookFilter, row_to_book, search, stats
+from .queries import (
+    BASE_SELECT,
+    BookFilter,
+    books_grouped_by_author,
+    list_authors,
+    row_to_book,
+    search,
+    stats,
+)
 
 def _find_web_dir() -> Path | None:
     """Locate the static UI.
@@ -36,6 +44,8 @@ def _find_web_dir() -> Path | None:
 
 
 WEB_DIR = _find_web_dir()
+
+MAX_AUTHOR_BOOKS = 500
 
 
 class BookPatch(BaseModel):
@@ -63,6 +73,13 @@ class ImportBody(BaseModel):
     isbns: list[str] | None = None
     text: str | None = None
     refresh: bool = False
+
+
+class MergeAuthorsBody(BaseModel):
+    """Fold `source_id` into `target_id`, keeping the latter."""
+
+    source_id: int
+    target_id: int
 
 
 def _cors_origins() -> list[str]:
@@ -115,6 +132,7 @@ def create_app(db: str | os.PathLike[str] | None = None) -> FastAPI:
         status: list[str] = Query(default=[]),
         tag: list[str] = Query(default=[]),
         author: str | None = None,
+        author_id: int | None = None,
         language: str | None = None,
         rating_min: int | None = None,
         untagged: bool = False,
@@ -122,15 +140,17 @@ def create_app(db: str | os.PathLike[str] | None = None) -> FastAPI:
         order: str = "asc",
         limit: int = 100,
         offset: int = 0,
+        group_by: str | None = None,
+        min_books: int = 1,
     ) -> dict[str, Any]:
-        return search(
-            conn,
-            BookFilter(
-                q=q, status=status, tags=tag, author=author, language=language,
-                rating_min=rating_min, untagged=untagged, sort=sort, order=order,
-                limit=limit, offset=offset,
-            ),
+        book_filter = BookFilter(
+            q=q, status=status, tags=tag, author=author, author_id=author_id,
+            language=language, rating_min=rating_min, untagged=untagged,
+            sort=sort, order=order, limit=limit, offset=offset,
         )
+        if group_by == "author":
+            return books_grouped_by_author(conn, book_filter, min_books=min_books)
+        return search(conn, book_filter)
 
     @app.get("/api/books/{isbn13}", dependencies=guarded)
     def get_book(isbn13: str, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
@@ -144,6 +164,31 @@ def create_app(db: str | os.PathLike[str] | None = None) -> FastAPI:
             "GROUP BY t.id ORDER BY count DESC, t.name COLLATE NOCASE"
         ).fetchall()
         return {"tags": [dict(r) for r in rows]}
+
+    @app.get("/api/authors", dependencies=guarded)
+    def get_authors(
+        conn: sqlite3.Connection = Depends(get_conn), q: str | None = None
+    ) -> dict[str, Any]:
+        return {"authors": list_authors(conn, q)}
+
+    @app.get("/api/authors/{author_id}", dependencies=guarded)
+    def get_author(author_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+        row = conn.execute("SELECT id, name FROM authors WHERE id = ?", (author_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"no author with id {author_id}")
+        books = search(conn, BookFilter(author_id=author_id, limit=MAX_AUTHOR_BOOKS))
+        return {"id": row["id"], "name": row["name"], "books": books["items"]}
+
+    @app.post("/api/authors/merge", dependencies=guarded)
+    def post_merge_authors(
+        body: MergeAuthorsBody, conn: sqlite3.Connection = Depends(get_conn)
+    ) -> dict[str, Any]:
+        try:
+            result = merge_authors(conn, body.source_id, body.target_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        conn.commit()
+        return result
 
     @app.get("/api/stats", dependencies=guarded)
     def get_stats(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:

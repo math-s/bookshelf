@@ -52,12 +52,45 @@ Control the order explicitly with `--provider google,openlibrary`.
 | `bookshelf init` | Create or migrate the database |
 | `bookshelf import <file\|->` | Import ISBNs. `--dry-run`, `--refresh`, `--delay`, `--json` |
 | `bookshelf refetch` | Refresh provider metadata. `--stale-days N`, `--missing-only` |
-| `bookshelf list [query]` | Query from the terminal. `--status`, `--tag`, `--author`, `--rating-min` |
+| `bookshelf list [query]` | Query from the terminal. `--status`, `--tag`, `--author`, `--rating-min`, `--by-author` |
+| `bookshelf authors` | List authors with book counts and reading progress; `--merge FROM INTO` |
 | `bookshelf export` | Dump everything. `--format json\|csv` |
 | `bookshelf stats` | Totals, pages read, average rating, breakdowns |
 | `bookshelf serve` | Run the API and UI |
 
 Repeated `--tag` flags are ANDed: `--tag owned --tag sci-fi` means both.
+
+## Authors
+
+Authors are a real table, not a JSON blob on the book, so you can group a shelf
+by person:
+
+```bash
+bookshelf list --by-author                 # every author, most prolific first
+bookshelf list --by-author --min-books 2   # skip the one-off authors
+bookshelf authors                          # counts, how many you've read, avg rating
+```
+
+In the UI the **By author** view does the same thing, and any author name — in
+the sidebar, a group heading, or a book's detail drawer — filters the library
+down to that person.
+
+### Why names need normalising
+
+Providers spell the same person differently between editions. Names are reduced
+to a grouping key that folds case, accents, punctuation and initial spacing, so
+`J.R.R. Tolkien` and `J. R. R. Tolkien` are one author rather than two.
+
+That deliberately stops short of guessing. A transliteration like `Roal'd Dal'`
+next to `Roald Dahl` is one person but two unrelated strings — no safe rule
+merges those, so you say so explicitly:
+
+```bash
+bookshelf authors --merge "Roal'd Dal'" "Roald Dahl"
+```
+
+The merge records an alias, so the **next refetch re-links the old spelling to
+the canonical author** instead of recreating the duplicate.
 
 ## API
 
@@ -140,7 +173,7 @@ import in one batch.
 ## Development
 
 ```bash
-pytest              # 93 tests, none touch the network
+pytest              # 134 tests, none touch the network
 ```
 
 Provider parsing is tested against recorded payloads in `tests/fixtures/`,
@@ -162,6 +195,12 @@ web/             the UI — plain HTML/CSS/JS, no build step
 
 `books` holds provider metadata and is rewritten freely on refetch. `user_books`,
 `tags` and `book_tags` hold your data and are never touched by a fetch.
+
+`authors`, `book_authors` and `author_aliases` are derived from the provider's
+author list on every upsert — `books.authors` stays as the raw payload, feeding
+the FTS index and acting as the source the relation is rebuilt from. Migrations
+are versioned and applied in place, so an existing database gains the author
+tables and backfills itself on the next `bookshelf init` or server boot.
 `lookup_cache` stores raw provider responses so re-imports and retries cost no
 API quota. `import_runs` and `import_failures` keep a record of what went wrong
 in a batch instead of dropping bad lines silently.

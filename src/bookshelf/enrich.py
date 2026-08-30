@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
+from .db import set_authors
 from .isbn import ParsedISBN, parse_many
 from .providers import BookRecord, NotFound, Provider, ProviderError, RateLimited, build_chain
 
@@ -173,6 +174,8 @@ def upsert_book(conn: sqlite3.Connection, record: BookRecord) -> str:
         action = "added"
 
     conn.execute("INSERT OR IGNORE INTO user_books (isbn13) VALUES (?)", (record.isbn13,))
+    # Keep the author relation in step with the provider payload we just stored.
+    set_authors(conn, record.isbn13, record.authors)
     return action
 
 

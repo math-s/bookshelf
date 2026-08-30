@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 DEFAULT_DB_PATH = "data/bookshelf.db"
 
@@ -123,6 +125,38 @@ MIGRATIONS: list[tuple[int, str]] = [
         END;
         """,
     ),
+    (
+        2,
+        """
+        -- Authors become a real relation so books can be grouped by person rather
+        -- than by whatever string a provider happened to return. `books.authors`
+        -- stays as the raw provider value: it feeds the FTS index and is what the
+        -- relation below is derived from.
+        CREATE TABLE authors (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            name      TEXT NOT NULL,          -- display form
+            sort_name TEXT NOT NULL UNIQUE    -- normalised key used for grouping
+        );
+
+        -- Variant spellings that have been merged into a canonical author, so the
+        -- merge survives a refetch that reintroduces the old spelling.
+        CREATE TABLE author_aliases (
+            sort_name TEXT PRIMARY KEY,
+            author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE book_authors (
+            isbn13    TEXT NOT NULL REFERENCES books(isbn13) ON DELETE CASCADE,
+            author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+            position  INTEGER NOT NULL DEFAULT 0,   -- preserves credited order
+            PRIMARY KEY (isbn13, author_id)
+        );
+
+        CREATE INDEX idx_book_authors_author ON book_authors(author_id);
+        CREATE INDEX idx_authors_sort        ON authors(sort_name);
+        """,
+    ),
+    (3, "backfill_authors"),
 ]
 
 
@@ -154,14 +188,23 @@ def current_version(conn: sqlite3.Connection) -> int:
     return row["v"] or 0
 
 
+# Migration steps that need Python rather than plain SQL.
+DATA_MIGRATIONS: dict[str, Callable[[sqlite3.Connection], None]] = {
+    "backfill_authors": lambda conn: backfill_authors(conn),
+}
+
+
 def apply_migrations(conn: sqlite3.Connection) -> int:
     """Apply any migrations newer than the DB's recorded version. Idempotent."""
     version = current_version(conn)
-    for target, sql in MIGRATIONS:
+    for target, step in MIGRATIONS:
         if target <= version:
             continue
         with conn:
-            conn.executescript(sql)
+            if step in DATA_MIGRATIONS:
+                DATA_MIGRATIONS[step](conn)
+            else:
+                conn.executescript(step)
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (target,))
         version = target
     return version
@@ -214,6 +257,164 @@ def set_tags(conn: sqlite3.Connection, isbn13: str, names: list[str]) -> list[st
         "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)"
     )
     return cleaned
+
+
+# --- authors -------------------------------------------------------------------
+
+# Runs of single letters collapse together, so "J. R. R. Tolkien" and
+# "J.R.R. Tolkien" resolve to one author rather than two.
+_PUNCT = re.compile(r"[^a-z0-9]+")
+
+
+def normalize_author_name(name: str) -> str:
+    """Reduce an author name to a grouping key.
+
+    Case, accents, punctuation and initial spacing all vary between providers and
+    even between editions from one provider. This folds those differences without
+    guessing at anything riskier: names that genuinely differ in spelling stay
+    separate, and are joined explicitly with `merge_authors` instead.
+    """
+    decomposed = unicodedata.normalize("NFKD", name or "")
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    tokens = _PUNCT.sub(" ", stripped.lower()).split()
+
+    merged: list[str] = []
+    initials: list[str] = []
+    for token in tokens:
+        if len(token) == 1:
+            initials.append(token)
+            continue
+        if initials:
+            merged.append("".join(initials))
+            initials = []
+        merged.append(token)
+    if initials:
+        merged.append("".join(initials))
+    return " ".join(merged)
+
+
+def resolve_author(conn: sqlite3.Connection, name: str) -> int | None:
+    """Find or create the author row for a provider-supplied name.
+
+    Checks canonical names first, then aliases left behind by a merge, so a
+    refetch that reintroduces a merged-away spelling does not resurrect it.
+    """
+    display = (name or "").strip()
+    sort_name = normalize_author_name(display)
+    if not sort_name:
+        return None
+
+    row = conn.execute("SELECT id FROM authors WHERE sort_name = ?", (sort_name,)).fetchone()
+    if row:
+        return row["id"]
+
+    row = conn.execute(
+        "SELECT author_id FROM author_aliases WHERE sort_name = ?", (sort_name,)
+    ).fetchone()
+    if row:
+        return row["author_id"]
+
+    cur = conn.execute(
+        "INSERT INTO authors (name, sort_name) VALUES (?, ?)", (display, sort_name)
+    )
+    return cur.lastrowid
+
+
+def set_authors(conn: sqlite3.Connection, isbn13: str, names: list[str]) -> list[str]:
+    """Replace a book's author links, preserving credited order."""
+    conn.execute("DELETE FROM book_authors WHERE isbn13 = ?", (isbn13,))
+    linked: list[str] = []
+    seen: set[int] = set()
+    position = 0
+    for name in names or []:
+        author_id = resolve_author(conn, name)
+        if author_id is None or author_id in seen:
+            continue
+        seen.add(author_id)
+        conn.execute(
+            "INSERT INTO book_authors (isbn13, author_id, position) VALUES (?, ?, ?)",
+            (isbn13, author_id, position),
+        )
+        position += 1
+        linked.append(name.strip())
+    prune_authors(conn)
+    return linked
+
+
+def authors_for(conn: sqlite3.Connection, isbn13: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT a.id, a.name FROM authors a
+        JOIN book_authors ba ON ba.author_id = a.id
+        WHERE ba.isbn13 = ? ORDER BY ba.position, a.name COLLATE NOCASE
+        """,
+        (isbn13,),
+    ).fetchall()
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
+
+
+def prune_authors(conn: sqlite3.Connection) -> None:
+    """Drop authors no book credits any more, so the sidebar stays truthful."""
+    conn.execute(
+        "DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM book_authors)"
+    )
+
+
+def merge_authors(conn: sqlite3.Connection, source_id: int, target_id: int) -> dict:
+    """Fold one author into another, keeping the merge across future refetches.
+
+    Providers disagree about names in ways normalisation cannot safely fix — a
+    transliteration like "Roal'd Dal'" beside "Roald Dahl" is one person but two
+    unrelated strings. Merging records an alias so the next fetch re-links to the
+    canonical author instead of recreating the variant.
+    """
+    if source_id == target_id:
+        raise ValueError("cannot merge an author into itself")
+
+    source = conn.execute("SELECT * FROM authors WHERE id = ?", (source_id,)).fetchone()
+    target = conn.execute("SELECT * FROM authors WHERE id = ?", (target_id,)).fetchone()
+    if not source:
+        raise ValueError(f"no author with id {source_id}")
+    if not target:
+        raise ValueError(f"no author with id {target_id}")
+
+    moved = conn.execute(
+        """
+        UPDATE OR IGNORE book_authors SET author_id = ?
+        WHERE author_id = ?
+          AND isbn13 NOT IN (SELECT isbn13 FROM book_authors WHERE author_id = ?)
+        """,
+        (target_id, source_id, target_id),
+    ).rowcount
+    # Any rows left are books already credited to the target; drop the duplicate.
+    conn.execute("DELETE FROM book_authors WHERE author_id = ?", (source_id,))
+
+    conn.execute(
+        "INSERT OR REPLACE INTO author_aliases (sort_name, author_id) VALUES (?, ?)",
+        (source["sort_name"], target_id),
+    )
+    # Aliases that pointed at the source now point at the target.
+    conn.execute(
+        "UPDATE author_aliases SET author_id = ? WHERE author_id = ?", (target_id, source_id)
+    )
+    conn.execute("DELETE FROM authors WHERE id = ?", (source_id,))
+
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM book_authors WHERE author_id = ?", (target_id,)
+    ).fetchone()[0]
+    return {
+        "merged": source["name"],
+        "into": target["name"],
+        "target_id": target_id,
+        "books_moved": moved,
+        "books_total": remaining,
+    }
+
+
+def backfill_authors(conn: sqlite3.Connection) -> None:
+    """Populate the author relation from the JSON already stored on `books`."""
+    for row in conn.execute("SELECT isbn13, authors FROM books").fetchall():
+        set_authors(conn, row["isbn13"], json_list(row["authors"]))
 
 
 def tags_for(conn: sqlite3.Connection, isbn13: str) -> list[str]:
